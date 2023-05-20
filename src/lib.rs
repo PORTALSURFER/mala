@@ -26,9 +26,9 @@ impl Size {
 struct TextureSaver;
 
 impl TextureSaver {
-    fn save_buffer_data_to_file(file_path: &str, texture_width: u32, texture_height: u32, data: Vec<u8>) {
+    fn save_buffer_data_to_file(file_path: &str, texture_size: &Size, data: Vec<u8>) {
         use image::{ImageBuffer, Rgba};
-        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(texture_width, texture_height, data).unwrap();
+        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(texture_size.width, texture_size.height, data).unwrap();
         image_buffer.save(file_path).unwrap();
     }
 }
@@ -169,37 +169,38 @@ impl Renderer {
     }
 
     pub fn save_to_texture_on_disk(&self, file_path: &str) {
-        let (texture_width, texture_height, data) = self.map_texture_to_raw_data();
-        TextureSaver::save_buffer_data_to_file(file_path, texture_width, texture_height, data);
+        let (texture_size, data) = self.map_texture_to_raw_data();
+        TextureSaver::save_buffer_data_to_file(file_path, &texture_size, data);
     }
 
-    fn map_texture_to_raw_data(&self) -> (u32, u32, Vec<u8>) {
-        let uint32_size = std::mem::size_of::<u32>() as u32;
-        let texture_width = self.texture.size().width;
-        let texture_height = self.texture.size().height;
+    fn map_texture_to_raw_data(&self) -> (Size, Vec<u8>) {
         let texture_size = Size::new(self.texture.size().width, self.texture.size().height);
 
-        let texture_memory_size = texture_width * texture_height * uint32_size;
-        let unpadded_bytes_per_row = texture_width * 4;
+        let unpadded_bytes_per_row = texture_size.width * 4;
         let padded_bytes_per_row = (unpadded_bytes_per_row + COPY_BYTES_PER_ROW_ALIGNMENT - 1) / COPY_BYTES_PER_ROW_ALIGNMENT * COPY_BYTES_PER_ROW_ALIGNMENT;
-        let buffer = self.create_buffer_for_texture(texture_height, padded_bytes_per_row);
+        let buffer = self.create_buffer_for_texture(texture_size.height, padded_bytes_per_row);
         self.copy_texture_to_buffer(&texture_size, padded_bytes_per_row, &buffer);
         let padded_data = self.wait_for_buffer_copy_completion(&buffer);
-        let data = Self::read_data_from_buffer(&texture_size, texture_memory_size, padded_bytes_per_row, &padded_data);
-        (texture_width, texture_height, data)
+        let texture_data = Self::read_data_from_buffer(&texture_size, padded_bytes_per_row, &padded_data);
+        (texture_size, texture_data)
     }
 
-    fn read_data_from_buffer(texture_size: &Size, texture_mem_size: u32, padded_bytes_per_row: u32, padded_data: &BufferView) -> Vec<u8> {
-        let mut data = vec![0; (texture_mem_size * 4) as usize];
+    fn get_texture_memory_size(texture_size: &Size) -> u32 {
+        let uint32_size = std::mem::size_of::<u32>() as u32;
+        texture_size.get_area() * uint32_size
+    }
+
+    fn read_data_from_buffer(texture_size: &Size, padded_bytes_per_row: u32, buffer_view: &BufferView) -> Vec<u8> {
+        let texture_memory_size = Self::get_texture_memory_size(&texture_size);
+        let mut texture_data = vec![0; (texture_memory_size * 4) as usize];
         for y in 0..texture_size.height {
             let dest_start = (y * texture_size.width * 4) as usize;
             let dest_end = ((y + 1) * texture_size.width * 4) as usize;
             let src_start = (y * padded_bytes_per_row) as usize;
             let src_end = src_start + (texture_size.width * 4) as usize;
-
-            data[dest_start..dest_end].copy_from_slice(&padded_data[src_start..src_end]);
+            texture_data[dest_start..dest_end].copy_from_slice(&buffer_view[src_start..src_end]);
         }
-        data
+        texture_data
     }
 
     fn wait_for_buffer_copy_completion<'a>(&'a self, buffer: &'a Buffer) -> BufferView {
