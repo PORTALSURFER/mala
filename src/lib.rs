@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 use wgpu::{CommandBuffer, CommandEncoder, FragmentState, InstanceDescriptor, VertexState};
 use wgpu::util::DeviceExt;
 
@@ -44,7 +45,7 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
 
@@ -130,7 +131,6 @@ impl Renderer {
             render_pass.set_pipeline(&pipeline);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
             render_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
         }
 
@@ -139,14 +139,56 @@ impl Renderer {
     }
 
     pub fn save_to_texture_on_disk(&self, file_path: &str) {
-        // Here you'd use the wgpu API to copy the contents of your
-        // render target to a buffer, and then read the buffer back
-        // into host memory so you can write it to a file.
-        // This is also a complex process and would require a lot of code,
-        // so I'm not including it in this example.
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (800 * 600 * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
-        // For now, to make the test pass, you could simply create an empty file:
-        std::fs::File::create(file_path).unwrap();
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded_bytes_per_row = 800 * 4;
+        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
+
+        let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: None,
+        });
+        command_encoder.copy_texture_to_buffer(wgpu::ImageCopyTextureBase {
+            texture: &self.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: Default::default(),
+        }, wgpu::ImageCopyBuffer {
+            buffer: &buffer,
+            layout: wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: None,
+            },
+        }, wgpu::Extent3d {
+            width: 800,
+            height: 600,
+            depth_or_array_layers: 1,
+        });
+
+
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        self.queue.submit(std::iter::once(command_encoder.finish()));
+        self.queue.on_submitted_work_done(move || {
+            sender.send(()).expect("TODO: panic message");
+        });
+
+        futures::executor::block_on(receiver).unwrap();
+
+
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let mapping = buffer.slice(..).map_async(wgpu::MapMode::Read, move |e| { sender.send(()).expect("TODO: panic message"); });
+        futures::executor::block_on(receiver).unwrap();
+        self.device.poll(wgpu::Maintain::Wait);
+
+        let data = buffer.slice(..).get_mapped_range();
+        std::fs::write(file_path, &data).unwrap();
+        buffer.unmap();
     }
 
     pub fn is_initialized(&self) -> bool {
