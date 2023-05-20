@@ -38,7 +38,7 @@ impl Renderer {
             label: None,
             size: wgpu::Extent3d {
                 width: 800,
-                height: 600,
+                height: 256,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -139,25 +139,33 @@ impl Renderer {
     }
 
     pub fn save_to_texture_on_disk(&self, file_path: &str) {
+        let u32_size = std::mem::size_of::<u32>() as u32;
+        let texture_width = self.texture.size().width;
+        let texture_height = self.texture.size().height;
+        let texture_mem_size = texture_width * texture_height * u32_size;
+
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded_bytes_per_row = texture_width * 4;
+        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
+
+        let buffer_size = (padded_bytes_per_row * texture_height) as u64;
+
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (800 * 600 * 4) as u64,
+            size: buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let unpadded_bytes_per_row = 800 * 4;
-        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
-
         let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
         });
-        command_encoder.copy_texture_to_buffer(wgpu::ImageCopyTextureBase {
+
+        command_encoder.copy_texture_to_buffer(wgpu::ImageCopyTexture {
             texture: &self.texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
-            aspect: Default::default(),
+            aspect: wgpu::TextureAspect::All,
         }, wgpu::ImageCopyBuffer {
             buffer: &buffer,
             layout: wgpu::ImageDataLayout {
@@ -166,29 +174,39 @@ impl Renderer {
                 rows_per_image: None,
             },
         }, wgpu::Extent3d {
-            width: 800,
-            height: 600,
+            width: texture_width,
+            height: texture_height,
             depth_or_array_layers: 1,
         });
 
+        self.queue.submit(Some(command_encoder.finish()));
+
+        let buffer_slice = buffer.slice(..);
 
         let (sender, receiver) = futures::channel::oneshot::channel();
-        self.queue.submit(std::iter::once(command_encoder.finish()));
-        self.queue.on_submitted_work_done(move || {
-            sender.send(()).expect("TODO: panic message");
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap();
         });
 
-        futures::executor::block_on(receiver).unwrap();
-
-
-        let (sender, receiver) = futures::channel::oneshot::channel();
-        let mapping = buffer.slice(..).map_async(wgpu::MapMode::Read, move |e| { sender.send(()).expect("TODO: panic message"); });
-        futures::executor::block_on(receiver).unwrap();
         self.device.poll(wgpu::Maintain::Wait);
+        futures::executor::block_on(receiver).unwrap().unwrap();
 
-        let data = buffer.slice(..).get_mapped_range();
-        std::fs::write(file_path, &data).unwrap();
-        buffer.unmap();
+
+        let padded_data = buffer_slice.get_mapped_range();
+
+        let mut data = vec![0; (texture_mem_size * 4) as usize];
+        for y in 0..texture_height {
+            let dest_start = (y * texture_width * 4) as usize;
+            let dest_end = ((y + 1) * texture_width * 4) as usize;
+            let src_start = (y * padded_bytes_per_row) as usize;
+            let src_end = src_start + (texture_width * 4) as usize;
+
+            data[dest_start..dest_end].copy_from_slice(&padded_data[src_start..src_end]);
+        }
+
+        use image::{ImageBuffer, Rgba};
+        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(texture_width, texture_height, data).unwrap();
+        image_buffer.save(file_path).unwrap();
     }
 
     pub fn is_initialized(&self) -> bool {
