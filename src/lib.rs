@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use wgpu::{CommandBuffer, CommandEncoder, FragmentState, InstanceDescriptor, VertexState};
+use wgpu::util::DeviceExt;
 
 pub struct Renderer {
     is_initialized: bool,
@@ -13,6 +14,14 @@ impl Renderer {
     }
 
     pub async fn render_triangle(&self) {
+        let vertices = [
+            [-0.5, -0.5],   // Bottom-left vertex
+            [0.5, -0.5],   // Bottom-right vertex
+            [0.0, 0.5],   // Top vertex
+        ];
+
+        let indices = [0, 1, 2];
+
         let instance = wgpu::Instance::new(InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             dx12_shader_compiler: Default::default(),
@@ -62,7 +71,6 @@ impl Renderer {
             multiview: None,
         });
 
-
         let view = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -77,6 +85,18 @@ impl Renderer {
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         }).create_view(&wgpu::TextureViewDescriptor::default());
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
         {
             let mut render_pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -93,7 +113,10 @@ impl Renderer {
             });
 
             render_pass.set_pipeline(&pipeline);
-            render_pass.draw(0..3, 0..1);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+            render_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
         }
 
         let command_buffer = command_encoder.finish();
