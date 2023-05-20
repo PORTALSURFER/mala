@@ -1,7 +1,31 @@
 use std::borrow::Cow;
 use std::num::NonZeroU32;
-use wgpu::{CommandBuffer, CommandEncoder, FragmentState, InstanceDescriptor, VertexState};
+use wgpu::{Buffer, BufferView, CommandBuffer, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, FragmentState, InstanceDescriptor, VertexState};
 use wgpu::util::DeviceExt;
+
+struct Size {
+    width: u32,
+    height: u32,
+}
+
+impl Size {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+        }
+    }
+}
+
+struct TextureSaver;
+
+impl TextureSaver {
+    fn save_buffer_data_to_file(file_path: &str, texture_width: u32, texture_height: u32, data: Vec<u8>) {
+        use image::{ImageBuffer, Rgba};
+        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(texture_width, texture_height, data).unwrap();
+        image_buffer.save(file_path).unwrap();
+    }
+}
 
 pub struct Renderer {
     device: wgpu::Device,
@@ -139,24 +163,54 @@ impl Renderer {
     }
 
     pub fn save_to_texture_on_disk(&self, file_path: &str) {
-        let u32_size = std::mem::size_of::<u32>() as u32;
+        let (texture_width, texture_height, data) = self.map_texture_to_raw_data();
+        TextureSaver::save_buffer_data_to_file(file_path, texture_width, texture_height, data);
+    }
+
+    fn map_texture_to_raw_data(&self) -> (u32, u32, Vec<u8>) {
+        let uint32_size = std::mem::size_of::<u32>() as u32;
         let texture_width = self.texture.size().width;
         let texture_height = self.texture.size().height;
-        let texture_mem_size = texture_width * texture_height * u32_size;
+        let texture_size = Size::new(self.texture.size().width, self.texture.size().height);
 
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let texture_memory_size = texture_width * texture_height * uint32_size;
         let unpadded_bytes_per_row = texture_width * 4;
-        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
+        let padded_bytes_per_row = (unpadded_bytes_per_row + COPY_BYTES_PER_ROW_ALIGNMENT - 1) / COPY_BYTES_PER_ROW_ALIGNMENT * COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = self.create_buffer_for_texture(texture_height, padded_bytes_per_row);
+        self.copy_texture_to_buffer(texture_width, texture_height, padded_bytes_per_row, &buffer);
+        let padded_data = self.wait_for_buffer_copy_completion(&buffer);
+        let data = Self::read_data_from_buffer(&texture_size, texture_memory_size, padded_bytes_per_row, &padded_data);
+        (texture_width, texture_height, data)
+    }
 
-        let buffer_size = (padded_bytes_per_row * texture_height) as u64;
+    fn read_data_from_buffer(texture_size: &Size, texture_mem_size: u32, padded_bytes_per_row: u32, padded_data: &BufferView) -> Vec<u8> {
+        let mut data = vec![0; (texture_mem_size * 4) as usize];
+        for y in 0..texture_size.height {
+            let dest_start = (y * texture_size.width * 4) as usize;
+            let dest_end = ((y + 1) * texture_size.width * 4) as usize;
+            let src_start = (y * padded_bytes_per_row) as usize;
+            let src_end = src_start + (texture_size.width * 4) as usize;
 
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
+            data[dest_start..dest_end].copy_from_slice(&padded_data[src_start..src_end]);
+        }
+        data
+    }
+
+    fn wait_for_buffer_copy_completion<'a>(&'a self, buffer: &'a Buffer) -> BufferView {
+        let buffer_slice = buffer.slice(..);
+
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap();
         });
 
+        self.device.poll(wgpu::Maintain::Wait);
+        futures::executor::block_on(receiver).unwrap().unwrap();
+        let padded_data = buffer_slice.get_mapped_range();
+        padded_data
+    }
+
+    fn copy_texture_to_buffer(&self, texture_width: u32, texture_height: u32, padded_bytes_per_row: u32, buffer: &Buffer) {
         let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
         });
@@ -180,33 +234,17 @@ impl Renderer {
         });
 
         self.queue.submit(Some(command_encoder.finish()));
+    }
 
-        let buffer_slice = buffer.slice(..);
-
-        let (sender, receiver) = futures::channel::oneshot::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
+    fn create_buffer_for_texture(&self, texture_height: u32, padded_bytes_per_row: u32) -> Buffer {
+        let buffer_size = (padded_bytes_per_row * texture_height) as u64;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
-
-        self.device.poll(wgpu::Maintain::Wait);
-        futures::executor::block_on(receiver).unwrap().unwrap();
-
-
-        let padded_data = buffer_slice.get_mapped_range();
-
-        let mut data = vec![0; (texture_mem_size * 4) as usize];
-        for y in 0..texture_height {
-            let dest_start = (y * texture_width * 4) as usize;
-            let dest_end = ((y + 1) * texture_width * 4) as usize;
-            let src_start = (y * padded_bytes_per_row) as usize;
-            let src_end = src_start + (texture_width * 4) as usize;
-
-            data[dest_start..dest_end].copy_from_slice(&padded_data[src_start..src_end]);
-        }
-
-        use image::{ImageBuffer, Rgba};
-        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(texture_width, texture_height, data).unwrap();
-        image_buffer.save(file_path).unwrap();
+        buffer
     }
 
     pub fn is_initialized(&self) -> bool {
@@ -230,5 +268,12 @@ mod tests {
         renderer.render_triangle();
         renderer.save_to_texture_on_disk("output.png");
         assert!(std::path::Path::new("output.png").exists(), "Texture was not saved on disk");
+    }
+
+    #[test]
+    fn test_create_new_size() {
+        let size = Size::new(100, 200);
+        assert_eq!(size.width, 100);
+        assert_eq!(size.height, 200);
     }
 }
