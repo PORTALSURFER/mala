@@ -1,7 +1,31 @@
 use std::borrow::Cow;
 use std::num::NonZeroU32;
-use wgpu::{Buffer, BufferView, CommandBuffer, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, FragmentState, InstanceDescriptor, Texture, VertexState};
+use image::{ImageBuffer, Rgba};
+use wgpu::{Adapter, Buffer, BufferView, CommandBuffer, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, FragmentState, Instance, InstanceDescriptor, Queue, RenderPipeline, ShaderModule, Texture, TextureView, VertexState};
 use wgpu::util::DeviceExt;
+
+async fn request_adapter(instance: Instance) -> Adapter {
+    instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        force_fallback_adapter: false,
+        compatible_surface: None,
+    }).await.unwrap()
+}
+
+fn create_instance() -> Instance {
+    Instance::new(InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        dx12_shader_compiler: Default::default(),
+    })
+}
+
+async fn request_device(adapter: Adapter) -> (Device, Queue) {
+    adapter.request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        features: wgpu::Features::empty(),
+        limits: wgpu::Limits::default(),
+    }, None).await.unwrap()
+}
 
 struct Size {
     width: u32,
@@ -23,21 +47,60 @@ impl Size {
     }
 }
 
+use std::fmt;
+use image::ImageError;
+
+#[derive(Debug)]
+enum TextureSaverError {
+    ImageBufferCreationError,
+    ImageSaveError(ImageError),
+}
+
+impl fmt::Display for TextureSaverError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TextureSaverError::ImageBufferCreationError => write!(f, "Failed to create image buffer"),
+            TextureSaverError::ImageSaveError(error) => write!(f, "Failed to save image: {}", error),
+        }
+    }
+}
+
+impl From<ImageError> for TextureSaverError {
+    fn from(error: ImageError) -> Self {
+        TextureSaverError::ImageSaveError(error)
+    }
+}
+
 struct TextureSaver;
 
 impl TextureSaver {
-    fn save_buffer_data_to_file(file_path: &str, texture_size: &Size, data: Vec<u8>) {
-        use image::{ImageBuffer, Rgba};
-        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(texture_size.width, texture_size.height, data).unwrap();
-        image_buffer.save(file_path).unwrap();
+    fn save_buffer_data_to_file(file_path: &str, texture_size: &Size, data: Vec<u8>) -> Result<(), TextureSaverError> {
+        let image_buffer = Self::create_image_buffer(texture_size, data)?;
+        image_buffer.save(file_path).map_err(TextureSaverError::from)
+    }
+
+    fn create_image_buffer(texture_size: &Size, data: Vec<u8>) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, TextureSaverError> {
+        ImageBuffer::<Rgba<u8>, _>::from_raw(texture_size.width, texture_size.height, data).ok_or(TextureSaverError::ImageBufferCreationError)
+    }
+}
+
+struct Vertex {
+    position: [f64; 2],
+}
+
+impl Vertex {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self {
+            position: [x, y],
+        }
     }
 }
 
 pub struct Renderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
+    device: Device,
+    queue: Queue,
+    texture: Texture,
+    view: TextureView,
     is_initialized: bool,
 }
 
@@ -47,25 +110,10 @@ impl Renderer {
     }
 
     pub async fn new() -> Self {
-        let instance = wgpu::Instance::new(InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            dx12_shader_compiler: Default::default(),
-        });
-
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }).await.unwrap();
-
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            features: wgpu::Features::empty(),
-            limits: wgpu::Limits::default(),
-        }, None).await.unwrap();
-
+        let instance = create_instance();
+        let adapter = request_adapter(instance).await;
+        let (device, queue) = Self::request_device(adapter).await;
         let texture = Self::create_render_texture(&device);
-
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         Self {
@@ -95,24 +143,65 @@ impl Renderer {
     }
 
     pub fn render_triangle(&self) {
-        let vertices = [
-            [-0.5, -0.5],   // Bottom-left vertex
-            [0.5, -0.5],   // Bottom-right vertex
-            [0.0, 0.5],   // Top vertex
-        ];
-
+        let triangle_bottom_left_vertex = Vertex::new(-0.5, -0.5);
+        let triangle_bottom_right_vertex = Vertex::new(0.5, -0.5);
+        let triangle_top_vertex = Vertex::new(0.0, 0.5);
+        let vertices_new = [triangle_bottom_left_vertex.position, triangle_bottom_right_vertex.position, triangle_top_vertex.position];
         let indices = [0, 1, 2];
 
         let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
         });
 
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../shaders/shader.wgsl"))),
+        let shader = self.create_default_shader();
+        let pipeline = self.create_default_pipeline(&shader);
+        let vertex_buffer = self.create_vertex_buffer(&vertices_new);
+        let index_buffer = self.create_index_buffer(&indices);
+
+        self.triangle_render_pass(indices, &mut command_encoder, &pipeline, vertex_buffer, index_buffer);
+
+        let command_buffer = command_encoder.finish();
+        self.queue.submit(std::iter::once(command_buffer));
+    }
+
+    fn triangle_render_pass(&self, indices: [i32; 3], command_encoder: &mut CommandEncoder, pipeline: &RenderPipeline, vertex_buffer: Buffer, index_buffer: Buffer) {
+        let mut render_pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                    store: true,
+                },
+            })],
+            depth_stencil_attachment: None,
         });
 
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        render_pass.set_pipeline(&pipeline);
+        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+    }
+
+    fn create_index_buffer(&self, indices: &[i32; 3]) -> Buffer {
+        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        })
+    }
+
+    fn create_vertex_buffer(&self, vertices_new: &[[f64; 2]; 3]) -> Buffer {
+        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(vertices_new),
+            usage: wgpu::BufferUsages::VERTEX,
+        })
+    }
+
+    fn create_default_pipeline(&self, shader: &ShaderModule) -> RenderPipeline {
+        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: None,
             vertex: VertexState {
@@ -133,43 +222,14 @@ impl Renderer {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-        });
+        })
+    }
 
-
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        {
-            let mut render_pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            render_pass.set_pipeline(&pipeline);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
-        }
-
-        let command_buffer = command_encoder.finish();
-        self.queue.submit(std::iter::once(command_buffer));
+    fn create_default_shader(&self) -> ShaderModule {
+        self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../shaders/shader.wgsl"))),
+        })
     }
 
     pub fn save_to_texture_on_disk(&self, file_path: &str) {
@@ -179,7 +239,6 @@ impl Renderer {
 
     fn map_texture_to_raw_data(&self) -> (Size, Vec<u8>) {
         let texture_size = Size::new(self.texture.size().width, self.texture.size().height);
-
         let unpadded_bytes_per_row = texture_size.width * 4;
         let padded_bytes_per_row = (unpadded_bytes_per_row + COPY_BYTES_PER_ROW_ALIGNMENT - 1) / COPY_BYTES_PER_ROW_ALIGNMENT * COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.create_buffer_for_texture(texture_size.height, padded_bytes_per_row);
@@ -207,7 +266,7 @@ impl Renderer {
         texture_data
     }
 
-    fn wait_for_buffer_copy_completion<'a>(&'a self, buffer: &'a Buffer) -> BufferView {
+    fn wait_for_buffer_copy_completion<'a>(&self, buffer: &'a Buffer) -> BufferView<'a> {
         let buffer_slice = buffer.slice(..);
 
         let (sender, receiver) = futures::channel::oneshot::channel();
@@ -292,5 +351,11 @@ mod tests {
     fn test_get_size_area() {
         let size_area = Size::new(100, 200).get_area();
         assert_eq!(size_area, 20000);
+    }
+
+    #[test]
+    fn test_create_new_vertex() {
+        let vertex = Vertex::new(1.0, 3.0);
+        assert_eq!(vertex.position, [1.0, 3.0]);
     }
 }
