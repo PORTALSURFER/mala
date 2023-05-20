@@ -9,6 +9,12 @@ struct Size {
 }
 
 impl Size {
+    pub fn get_area(&self) -> u32 {
+        self.width * self.height
+    }
+}
+
+impl Size {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -275,5 +281,11 @@ mod tests {
         let size = Size::new(100, 200);
         assert_eq!(size.width, 100);
         assert_eq!(size.height, 200);
+    }
+
+    #[test]
+    fn test_get_size_area() {
+        let size_area = Size::new(100, 200).get_area();
+        assert_eq!(size_area, 20000);
     }
 }
