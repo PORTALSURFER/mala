@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::num::NonZeroU32;
-use wgpu::{Buffer, BufferView, CommandBuffer, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, FragmentState, InstanceDescriptor, VertexState};
+use wgpu::{Buffer, BufferView, CommandBuffer, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, FragmentState, InstanceDescriptor, Texture, VertexState};
 use wgpu::util::DeviceExt;
 
 struct Size {
@@ -64,7 +64,21 @@ impl Renderer {
             limits: wgpu::Limits::default(),
         }, None).await.unwrap();
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = Self::create_render_texture(&device);
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            device,
+            queue,
+            texture,
+            view,
+            is_initialized: true,
+        }
+    }
+
+    fn create_render_texture(device: &Device) -> Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
                 width: 800,
@@ -77,17 +91,7 @@ impl Renderer {
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
-        });
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        Self {
-            device,
-            queue,
-            texture,
-            view,
-            is_initialized: true,
-        }
+        })
     }
 
     pub fn render_triangle(&self) {
