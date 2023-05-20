@@ -177,7 +177,7 @@ impl Renderer {
         let unpadded_bytes_per_row = texture_width * 4;
         let padded_bytes_per_row = (unpadded_bytes_per_row + COPY_BYTES_PER_ROW_ALIGNMENT - 1) / COPY_BYTES_PER_ROW_ALIGNMENT * COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.create_buffer_for_texture(texture_height, padded_bytes_per_row);
-        self.copy_texture_to_buffer(texture_width, texture_height, padded_bytes_per_row, &buffer);
+        self.copy_texture_to_buffer(&texture_size, padded_bytes_per_row, &buffer);
         let padded_data = self.wait_for_buffer_copy_completion(&buffer);
         let data = Self::read_data_from_buffer(&texture_size, texture_memory_size, padded_bytes_per_row, &padded_data);
         (texture_width, texture_height, data)
@@ -210,7 +210,7 @@ impl Renderer {
         padded_data
     }
 
-    fn copy_texture_to_buffer(&self, texture_width: u32, texture_height: u32, padded_bytes_per_row: u32, buffer: &Buffer) {
+    fn copy_texture_to_buffer(&self, texture_size: &Size, padded_bytes_per_row: u32, buffer: &Buffer) {
         let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
         });
@@ -228,8 +228,8 @@ impl Renderer {
                 rows_per_image: None,
             },
         }, wgpu::Extent3d {
-            width: texture_width,
-            height: texture_height,
+            width: texture_size.width,
+            height: texture_size.height,
             depth_or_array_layers: 1,
         });
 
