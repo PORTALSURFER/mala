@@ -27,6 +27,23 @@ async fn request_device(adapter: Adapter) -> (Device, Queue) {
     }, None).await.unwrap()
 }
 
+fn create_render_texture(device: &Device) -> Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 800,
+            height: 256,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    })
+}
+
 struct Size {
     width: u32,
     height: u32,
@@ -112,8 +129,8 @@ impl Renderer {
     pub async fn new() -> Self {
         let instance = create_instance();
         let adapter = request_adapter(instance).await;
-        let (device, queue) = Self::request_device(adapter).await;
-        let texture = Self::create_render_texture(&device);
+        let (device, queue) = request_device(adapter).await;
+        let texture = create_render_texture(&device);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         Self {
@@ -123,23 +140,6 @@ impl Renderer {
             view,
             is_initialized: true,
         }
-    }
-
-    fn create_render_texture(device: &Device) -> Texture {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: 800,
-                height: 256,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
     }
 
     pub fn render_triangle(&self) {
