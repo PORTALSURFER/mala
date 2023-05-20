@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use wgpu::{CommandBuffer, CommandEncoder, InstanceDescriptor, VertexState};
+use wgpu::{CommandBuffer, CommandEncoder, FragmentState, InstanceDescriptor, VertexState};
 
 pub struct Renderer {
     is_initialized: bool,
@@ -44,13 +44,21 @@ impl Renderer {
             layout: None,
             vertex: VertexState {
                 module: &shader,
-                entry_point: "",
+                entry_point: "vs_main",
                 buffers: &[],
             },
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
-            fragment: None,
             multiview: None,
         });
 
