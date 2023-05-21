@@ -177,7 +177,7 @@ impl Renderer {
         })
     }
 
-    pub fn render_triangle(&self) {
+    pub fn render_triangle(&self) -> Result<(), ()> {
         let triangle_bottom_left_vertex = Vertex::new(-0.5, -0.5);
         let triangle_bottom_right_vertex = Vertex::new(0.5, -0.5);
         let triangle_top_vertex = Vertex::new(0.0, 0.5);
@@ -189,7 +189,7 @@ impl Renderer {
         });
 
         let shader = self.create_default_shader();
-        let pipeline = self.create_default_pipeline(&shader);
+        let pipeline = self.create_default_pipeline(&shader)?;
         let vertex_buffer = self.create_vertex_buffer(&vertices);
         let index_buffer = self.create_index_buffer(&indices);
 
@@ -197,6 +197,7 @@ impl Renderer {
 
         let command_buffer = command_encoder.finish();
         self.queue.submit(std::iter::once(command_buffer));
+        Ok(())
     }
 
     fn triangle_render_pass(&self, indices: [i32; 3], command_encoder: &mut CommandEncoder, pipeline: &RenderPipeline, vertex_buffer: Buffer, index_buffer: Buffer) {
@@ -235,8 +236,8 @@ impl Renderer {
         })
     }
 
-    fn create_default_pipeline(&self, shader: &ShaderModule) -> RenderPipeline {
-        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    fn create_default_pipeline(&self, shader: &ShaderModule) -> Result<RenderPipeline, ()> {
+        Ok(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: None,
             vertex: VertexState {
@@ -269,7 +270,7 @@ impl Renderer {
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
-        })
+        }))
     }
 
     fn create_default_shader(&self) -> ShaderModule {
@@ -387,7 +388,7 @@ mod tests {
     #[test]
     fn test_render_to_texture_on_disk() {
         let renderer = Renderer::new_blocking().unwrap();
-        renderer.render_triangle();
+        renderer.render_triangle().unwrap();
         renderer.save_to_texture_on_disk("output.png").unwrap();
         assert!(std::path::Path::new("output.png").exists(), "Texture was not saved on disk");
         //std::fs::remove_file("output.png").unwrap();
@@ -396,7 +397,7 @@ mod tests {
     #[test]
     fn test_save_to_texture_on_disk_with_bad_path() {
         let renderer = Renderer::new_blocking().unwrap();
-        renderer.render_triangle();
+        renderer.render_triangle().unwrap();
         assert!(renderer.save_to_texture_on_disk("badfolder/output.png").is_err(), "Texture was saved on disk with bad path");
     }
 
@@ -417,5 +418,13 @@ mod tests {
     fn test_create_new_vertex() {
         let vertex = Vertex::new(1.0, 3.0);
         assert_eq!(vertex.position, [1.0, 3.0]);
+    }
+
+    #[test]
+    fn test_create_default_pipeline() {
+        let renderer = Renderer::new_blocking().unwrap();
+        let shader = renderer.create_default_shader();
+        let pipeline = renderer.create_default_pipeline(&shader);
+        assert!(pipeline.is_ok(), "Pipeline was not created");
     }
 }
