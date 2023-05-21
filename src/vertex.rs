@@ -1,3 +1,4 @@
+mod tests;
 use crate::constants::VertexFloat;
 
 pub struct Vertex {

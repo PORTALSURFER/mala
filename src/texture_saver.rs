@@ -1,4 +1,5 @@
 mod error;
+mod tests;
 
 pub use error::TextureSaverError;
 

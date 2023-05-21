@@ -1,3 +1,5 @@
+mod tests;
+
 use wgpu::{Adapter, Buffer, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, Face, FragmentState, Instance, InstanceDescriptor, PrimitiveState, Queue, RenderPipeline, RequestDeviceError, ShaderModule, Texture, TextureView, VertexState};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
