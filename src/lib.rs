@@ -1,6 +1,8 @@
 mod constants;
 mod error;
 mod size;
+mod vertex;
+mod texture_saver;
 
 use constants::*;
 use error::*;
@@ -10,6 +12,8 @@ use std::borrow::Cow;
 use image::{ImageBuffer, Rgba};
 use wgpu::{Adapter, Buffer, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, Face, FragmentState, Instance, InstanceDescriptor, PrimitiveState, Queue, RenderPipeline, RequestDeviceError, ShaderModule, Texture, TextureView, VertexState};
 use wgpu::util::DeviceExt;
+use crate::texture_saver::TextureSaver;
+use crate::vertex::Vertex;
 
 async fn request_adapter(instance: Instance) -> Option<Adapter> {
     instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -51,30 +55,7 @@ fn create_render_texture(device: &Device) -> Texture {
     })
 }
 
-struct TextureSaver;
 
-impl TextureSaver {
-    fn save_buffer_data_to_file(file_path: &str, texture_size: &Size, data: Vec<u8>) -> Result<(), TextureSaverError> {
-        let image_buffer = Self::create_image_buffer(texture_size, data)?;
-        image_buffer.save(file_path).map_err(TextureSaverError::from)
-    }
-
-    fn create_image_buffer(texture_size: &Size, data: Vec<u8>) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, TextureSaverError> {
-        ImageBuffer::<Rgba<u8>, _>::from_raw(texture_size.width, texture_size.height, data).ok_or(TextureSaverError::ImageBufferCreationError)
-    }
-}
-
-struct Vertex {
-    position: [VertexFloat; 2],
-}
-
-impl Vertex {
-    pub fn new(x: VertexFloat, y: VertexFloat) -> Self {
-        Self {
-            position: [x, y],
-        }
-    }
-}
 
 pub struct Renderer {
     device: Device,
