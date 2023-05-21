@@ -1,12 +1,14 @@
 mod constants;
 mod error;
+mod size;
 
 use constants::*;
 use error::*;
+use size::*;
 
 use std::borrow::Cow;
 use image::{ImageBuffer, Rgba};
-use wgpu::{Adapter, Buffer, BufferAsyncError, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, Face, FragmentState, Instance, InstanceDescriptor, PrimitiveState, Queue, RenderPipeline, RequestDeviceError, ShaderModule, Texture, TextureView, VertexState};
+use wgpu::{Adapter, Buffer, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, Face, FragmentState, Instance, InstanceDescriptor, PrimitiveState, Queue, RenderPipeline, RequestDeviceError, ShaderModule, Texture, TextureView, VertexState};
 use wgpu::util::DeviceExt;
 
 async fn request_adapter(instance: Instance) -> Option<Adapter> {
@@ -47,81 +49,6 @@ fn create_render_texture(device: &Device) -> Texture {
         usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     })
-}
-
-struct Size {
-    width: u32,
-    height: u32,
-}
-
-impl Size {
-    pub fn get_area(&self) -> u32 {
-        self.width * self.height
-    }
-}
-
-impl Size {
-    pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            width,
-            height,
-        }
-    }
-}
-
-use std::fmt;
-use image::ImageError;
-
-#[derive(Debug)]
-pub enum RendererError {
-    BufferMapError(BufferAsyncError),
-    TextureSaveFailure(TextureSaverError),
-    NoAdapterFound,
-    DeviceRequestError(RequestDeviceError),
-}
-
-impl fmt::Display for RendererError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            RendererError::BufferMapError(error) => write!(f, "Failed to map buffer: {}", error),
-            RendererError::TextureSaveFailure(error) => write!(f, "Failed to save texture to file: {}", error),
-            RendererError::NoAdapterFound => write!(f, "No adapter found"),
-            RendererError::DeviceRequestError(error) => write!(f, "Failed to request device: {}", error),
-        }
-    }
-}
-
-impl From<BufferAsyncError> for RendererError {
-    fn from(error: BufferAsyncError) -> Self {
-        RendererError::BufferMapError(error)
-    }
-}
-
-impl From<TextureSaverError> for RendererError {
-    fn from(error: TextureSaverError) -> Self {
-        RendererError::TextureSaveFailure(error)
-    }
-}
-
-#[derive(Debug)]
-pub enum TextureSaverError {
-    ImageBufferCreationError,
-    ImageSaveError(ImageError),
-}
-
-impl fmt::Display for TextureSaverError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            TextureSaverError::ImageBufferCreationError => write!(f, "Failed to create image buffer"),
-            TextureSaverError::ImageSaveError(error) => write!(f, "Failed to save image: {}", error),
-        }
-    }
-}
-
-impl From<ImageError> for TextureSaverError {
-    fn from(error: ImageError) -> Self {
-        TextureSaverError::ImageSaveError(error)
-    }
 }
 
 struct TextureSaver;
