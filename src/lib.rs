@@ -1,11 +1,13 @@
+mod constants;
+mod error;
+
+use constants::*;
+use error::*;
+
 use std::borrow::Cow;
 use image::{ImageBuffer, Rgba};
 use wgpu::{Adapter, Buffer, BufferAsyncError, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, Face, FragmentState, Instance, InstanceDescriptor, PrimitiveState, Queue, RenderPipeline, RequestDeviceError, ShaderModule, Texture, TextureView, VertexState};
 use wgpu::util::DeviceExt;
-
-type VertexFloat = f32;
-const RENDER_TARGET_WIDTH: u32 = 800;
-const RENDER_TARGET_HEIGHT: u32 = 256;
 
 async fn request_adapter(instance: Instance) -> Option<Adapter> {
     instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -68,7 +70,6 @@ impl Size {
 }
 
 use std::fmt;
-use std::fmt::write;
 use image::ImageError;
 
 #[derive(Debug)]
