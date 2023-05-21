@@ -1,1 +1,1 @@
-cargo watch -x test --ignore "output.png"
+cargo watch -x test --ignore "output.png" --ignore "output_test.png"

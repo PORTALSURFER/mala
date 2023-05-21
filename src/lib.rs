@@ -1,17 +1,18 @@
 use std::borrow::Cow;
 use image::{ImageBuffer, Rgba};
-use wgpu::{Adapter, Buffer, BufferAsyncError, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, FragmentState, Instance, InstanceDescriptor, Queue, RenderPipeline, ShaderModule, Texture, TextureView, VertexState};
+use wgpu::{Adapter, Buffer, BufferAsyncError, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, Face, FragmentState, Instance, InstanceDescriptor, PrimitiveState, Queue, RenderPipeline, RequestDeviceError, ShaderModule, Texture, TextureView, VertexState};
 use wgpu::util::DeviceExt;
 
+type VertexFloat = f32;
 const RENDER_TARGET_WIDTH: u32 = 800;
 const RENDER_TARGET_HEIGHT: u32 = 256;
 
-async fn request_adapter(instance: Instance) -> Adapter {
+async fn request_adapter(instance: Instance) -> Option<Adapter> {
     instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::default(),
         force_fallback_adapter: false,
         compatible_surface: None,
-    }).await.unwrap()
+    }).await
 }
 
 fn create_instance() -> Instance {
@@ -21,12 +22,12 @@ fn create_instance() -> Instance {
     })
 }
 
-async fn request_device(adapter: Adapter) -> (Device, Queue) {
+async fn request_device(adapter: Adapter) -> Result<(Device, Queue), RequestDeviceError> {
     adapter.request_device(&wgpu::DeviceDescriptor {
         label: None,
         features: wgpu::Features::empty(),
         limits: wgpu::Limits::default(),
-    }, None).await.unwrap()
+    }, None).await
 }
 
 fn create_render_texture(device: &Device) -> Texture {
@@ -67,26 +68,24 @@ impl Size {
 }
 
 use std::fmt;
+use std::fmt::write;
 use image::ImageError;
 
 #[derive(Debug)]
 pub enum RendererError {
-    CopyTextureError,
-    // TextureViewCreationError,
-    // RenderPipelineCreationError,
-    // CommandEncoderCreationError,
-    // CommandBufferCreationError,
-    // CommandBufferSubmissionError,
     BufferMapError(BufferAsyncError),
     TextureSaveFailure(TextureSaverError),
+    NoAdapterFound,
+    DeviceRequestError(RequestDeviceError),
 }
 
 impl fmt::Display for RendererError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            RendererError::CopyTextureError => write!(f, "Failed to copy texture"),
             RendererError::BufferMapError(error) => write!(f, "Failed to map buffer: {}", error),
             RendererError::TextureSaveFailure(error) => write!(f, "Failed to save texture to file: {}", error),
+            RendererError::NoAdapterFound => write!(f, "No adapter found"),
+            RendererError::DeviceRequestError(error) => write!(f, "Failed to request device: {}", error),
         }
     }
 }
@@ -138,11 +137,11 @@ impl TextureSaver {
 }
 
 struct Vertex {
-    position: [f64; 2],
+    position: [VertexFloat; 2],
 }
 
 impl Vertex {
-    pub fn new(x: f64, y: f64) -> Self {
+    pub fn new(x: VertexFloat, y: VertexFloat) -> Self {
         Self {
             position: [x, y],
         }
@@ -158,31 +157,31 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new_blocking() -> Self {
+    pub fn new_blocking() -> Result<Self, RendererError> {
         futures::executor::block_on(Self::new())
     }
 
-    pub async fn new() -> Self {
+    pub async fn new() -> Result<Self, RendererError> {
         let instance = create_instance();
-        let adapter = request_adapter(instance).await;
-        let (device, queue) = request_device(adapter).await;
+        let adapter = request_adapter(instance).await.ok_or(RendererError::NoAdapterFound)?;
+        let (device, queue) = request_device(adapter).await.map_err(RendererError::DeviceRequestError)?;
         let texture = create_render_texture(&device);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self {
+        Ok(Self {
             device,
             queue,
             texture,
             view,
             is_initialized: true,
-        }
+        })
     }
 
     pub fn render_triangle(&self) {
         let triangle_bottom_left_vertex = Vertex::new(-0.5, -0.5);
         let triangle_bottom_right_vertex = Vertex::new(0.5, -0.5);
         let triangle_top_vertex = Vertex::new(0.0, 0.5);
-        let vertices_new = [triangle_bottom_left_vertex.position, triangle_bottom_right_vertex.position, triangle_top_vertex.position];
+        let vertices = [triangle_bottom_left_vertex.position, triangle_bottom_right_vertex.position, triangle_top_vertex.position];
         let indices = [0, 1, 2];
 
         let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -191,7 +190,7 @@ impl Renderer {
 
         let shader = self.create_default_shader();
         let pipeline = self.create_default_pipeline(&shader);
-        let vertex_buffer = self.create_vertex_buffer(&vertices_new);
+        let vertex_buffer = self.create_vertex_buffer(&vertices);
         let index_buffer = self.create_index_buffer(&indices);
 
         self.triangle_render_pass(indices, &mut command_encoder, &pipeline, vertex_buffer, index_buffer);
@@ -207,7 +206,7 @@ impl Renderer {
                 view: &self.view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: true,
                 },
             })],
@@ -228,10 +227,10 @@ impl Renderer {
         })
     }
 
-    fn create_vertex_buffer(&self, vertices_new: &[[f64; 2]; 3]) -> Buffer {
+    fn create_vertex_buffer(&self, vertices: &[[VertexFloat; 2]; 3]) -> Buffer {
         self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(vertices_new),
+            contents: bytemuck::cast_slice(vertices),
             usage: wgpu::BufferUsages::VERTEX,
         })
     }
@@ -243,7 +242,11 @@ impl Renderer {
             vertex: VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[],
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                }],
             },
             fragment: Some(FragmentState {
                 module: &shader,
@@ -254,7 +257,15 @@ impl Renderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: Default::default(),
+            primitive: PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
             depth_stencil: None,
             multisample: Default::default(),
             multiview: None,
@@ -369,16 +380,24 @@ mod tests {
 
     #[test]
     fn test_render_initialization() {
-        let renderer = Renderer::new_blocking();
+        let renderer = Renderer::new_blocking().unwrap();
         assert!(renderer.is_initialized(), "Renderer was not initialized");
     }
 
     #[test]
     fn test_render_to_texture_on_disk() {
-        let renderer = Renderer::new_blocking();
+        let renderer = Renderer::new_blocking().unwrap();
         renderer.render_triangle();
-        renderer.save_to_texture_on_disk("output.png");
+        renderer.save_to_texture_on_disk("output.png").unwrap();
         assert!(std::path::Path::new("output.png").exists(), "Texture was not saved on disk");
+        //std::fs::remove_file("output.png").unwrap();
+    }
+
+    #[test]
+    fn test_save_to_texture_on_disk_with_bad_path() {
+        let renderer = Renderer::new_blocking().unwrap();
+        renderer.render_triangle();
+        assert!(renderer.save_to_texture_on_disk("badfolder/output.png").is_err(), "Texture was saved on disk with bad path");
     }
 
     #[test]
