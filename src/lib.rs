@@ -1,8 +1,10 @@
 use std::borrow::Cow;
-use std::num::NonZeroU32;
 use image::{ImageBuffer, Rgba};
-use wgpu::{Adapter, Buffer, BufferView, CommandBuffer, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, FragmentState, Instance, InstanceDescriptor, Queue, RenderPipeline, ShaderModule, Texture, TextureView, VertexState};
+use wgpu::{Adapter, Buffer, BufferAsyncError, BufferView, CommandEncoder, COPY_BYTES_PER_ROW_ALIGNMENT, Device, FragmentState, Instance, InstanceDescriptor, Queue, RenderPipeline, ShaderModule, Texture, TextureView, VertexState};
 use wgpu::util::DeviceExt;
+
+const RENDER_TARGET_WIDTH: u32 = 800;
+const RENDER_TARGET_HEIGHT: u32 = 256;
 
 async fn request_adapter(instance: Instance) -> Adapter {
     instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -31,8 +33,8 @@ fn create_render_texture(device: &Device) -> Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
-            width: 800,
-            height: 256,
+            width: RENDER_TARGET_WIDTH,
+            height: RENDER_TARGET_HEIGHT,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -68,7 +70,41 @@ use std::fmt;
 use image::ImageError;
 
 #[derive(Debug)]
-enum TextureSaverError {
+pub enum RendererError {
+    CopyTextureError,
+    // TextureViewCreationError,
+    // RenderPipelineCreationError,
+    // CommandEncoderCreationError,
+    // CommandBufferCreationError,
+    // CommandBufferSubmissionError,
+    BufferMapError(BufferAsyncError),
+    TextureSaveFailure(TextureSaverError),
+}
+
+impl fmt::Display for RendererError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RendererError::CopyTextureError => write!(f, "Failed to copy texture"),
+            RendererError::BufferMapError(error) => write!(f, "Failed to map buffer: {}", error),
+            RendererError::TextureSaveFailure(error) => write!(f, "Failed to save texture to file: {}", error),
+        }
+    }
+}
+
+impl From<BufferAsyncError> for RendererError {
+    fn from(error: BufferAsyncError) -> Self {
+        RendererError::BufferMapError(error)
+    }
+}
+
+impl From<TextureSaverError> for RendererError {
+    fn from(error: TextureSaverError) -> Self {
+        RendererError::TextureSaveFailure(error)
+    }
+}
+
+#[derive(Debug)]
+pub enum TextureSaverError {
     ImageBufferCreationError,
     ImageSaveError(ImageError),
 }
@@ -232,20 +268,21 @@ impl Renderer {
         })
     }
 
-    pub fn save_to_texture_on_disk(&self, file_path: &str) {
-        let (texture_size, data) = self.map_texture_to_raw_data();
-        TextureSaver::save_buffer_data_to_file(file_path, &texture_size, data);
+    pub fn save_to_texture_on_disk(&self, file_path: &str) -> Result<(), RendererError> {
+        let (texture_size, data) = self.map_texture_to_raw_data()?;
+        TextureSaver::save_buffer_data_to_file(file_path, &texture_size, data)?;
+        Ok(())
     }
 
-    fn map_texture_to_raw_data(&self) -> (Size, Vec<u8>) {
+    fn map_texture_to_raw_data(&self) -> Result<(Size, Vec<u8>), RendererError> {
         let texture_size = Size::new(self.texture.size().width, self.texture.size().height);
         let unpadded_bytes_per_row = texture_size.width * 4;
         let padded_bytes_per_row = (unpadded_bytes_per_row + COPY_BYTES_PER_ROW_ALIGNMENT - 1) / COPY_BYTES_PER_ROW_ALIGNMENT * COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.create_buffer_for_texture(texture_size.height, padded_bytes_per_row);
         self.copy_texture_to_buffer(&texture_size, padded_bytes_per_row, &buffer);
-        let padded_data = self.wait_for_buffer_copy_completion(&buffer);
+        let padded_data = self.wait_for_buffer_copy_completion(&buffer)?;
         let texture_data = Self::read_data_from_buffer(&texture_size, padded_bytes_per_row, &padded_data);
-        (texture_size, texture_data)
+        Ok((texture_size, texture_data))
     }
 
     fn get_texture_memory_size(texture_size: &Size) -> u32 {
@@ -266,18 +303,22 @@ impl Renderer {
         texture_data
     }
 
-    fn wait_for_buffer_copy_completion<'a>(&self, buffer: &'a Buffer) -> BufferView<'a> {
+    fn wait_for_buffer_copy_completion<'a>(&self, buffer: &'a Buffer) -> Result<BufferView<'a>, RendererError> {
         let buffer_slice = buffer.slice(..);
 
-        let (sender, receiver) = futures::channel::oneshot::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
-        });
+        futures::executor::block_on(async {
+            buffer_slice.map_async(wgpu::MapMode::Read, |result| {
+                if let Err(error) = result {
+                    eprintln!("Failed to map buffer: {:?}", error);
+                    panic!("Failed to map buffer: {:?}", error);
+                }
+            });
 
-        self.device.poll(wgpu::Maintain::Wait);
-        futures::executor::block_on(receiver).unwrap().unwrap();
-        let padded_data = buffer_slice.get_mapped_range();
-        padded_data
+            self.device.poll(wgpu::Maintain::Wait);
+
+            let padded_data = buffer_slice.get_mapped_range();
+            Ok(padded_data)
+        })
     }
 
     fn copy_texture_to_buffer(&self, texture_size: &Size, padded_bytes_per_row: u32, buffer: &Buffer) {
